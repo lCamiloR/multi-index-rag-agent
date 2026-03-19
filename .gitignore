@@ -208,3 +208,6 @@ __marimo__/
 
 # Assets
 assets/*
+
+# FAISS index
+faiss_index/*
