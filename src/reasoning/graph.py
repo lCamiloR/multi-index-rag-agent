@@ -5,7 +5,6 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
-from src.ingestion import Chunker, VectorstoreHandler, FileIngestionHandler
 from src.retrieval import RetrievalHandler
 
 from prompts import CONTEXTO_ORGANIZACIONAL_PROMPT, OWASP_ASSISTANT_PROMPT, ROUTER_PROMPT

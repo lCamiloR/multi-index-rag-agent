@@ -1,4 +1,3 @@
-
 from collections import defaultdict
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -11,13 +10,15 @@ from docling.document_converter import (
 from pathlib import Path
 import logging
 
+from src.config import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class FileIngestionHandler:
 
     def __init__(self):
-        self.assets_dir = Path(__file__).resolve().parents[2] / 'assets'
+        self.assets_dir = PROJECT_ROOT / 'assets'
 
         pdf_pipeline_options = PdfPipelineOptions()
         pdf_pipeline_options.do_ocr = False

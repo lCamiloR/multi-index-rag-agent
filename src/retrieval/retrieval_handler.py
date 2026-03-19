@@ -4,9 +4,14 @@ from base_embedding_handler import BaseEmbeedngHandler
 
 class RetrievalHandler(BaseEmbeedngHandler):
 
-    def __init__(self, embedding_model: str, faiss_local_path: str):
+    def __init__(self, embedding_model: str, faiss_local_path: str, index_name: str = "index"):
         super().__init__(embedding_model, faiss_local_path)
-        self.loaded_vectorstore = FAISS.load_local(self.faiss_local_path, self.sentence_transformer, allow_dangerous_deserialization=True)
+        self.loaded_vectorstore = FAISS.load_local(
+            self.faiss_local_path,
+            self.sentence_transformer,
+            index_name,
+            allow_dangerous_deserialization=True
+        )
         self.retriever: VectorStoreRetriever | None = None
         self.top_k: int | None = None
 
