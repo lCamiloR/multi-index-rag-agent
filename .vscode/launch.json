@@ -6,7 +6,11 @@
       "type": "python",
       "request": "launch",
       "program": "${file}",
+      "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
       "justMyCode": true
     }
   ]

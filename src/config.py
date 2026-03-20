@@ -18,5 +18,6 @@ class AgentConfig(BaseSettings):
     ANTHROPIC_MODEL_VERSION: str = Field(..., description="Model version to use for the agent.")
     EMBEDDING_MODEL: str = Field(..., description="Model to be used for embeddings.")
     FAISS_INDEXING_PATH: Path = PROJECT_ROOT / "faiss_index"
+    ASSETS_PATH: Path = PROJECT_ROOT / "assets"
 
 AGENT_CONFIG = AgentConfig()

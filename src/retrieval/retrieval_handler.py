@@ -1,6 +1,6 @@
 from langchain_community.vectorstores import FAISS
 from langchain_core.vectorstores import VectorStoreRetriever
-from base_embedding_handler import BaseEmbeedngHandler
+from src.base_embedding_handler import BaseEmbeedngHandler
 
 class RetrievalHandler(BaseEmbeedngHandler):
 

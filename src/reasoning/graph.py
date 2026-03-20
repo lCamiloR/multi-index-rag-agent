@@ -1,24 +1,29 @@
 from datetime import datetime
+from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
+from src.ingestion import VectorstoreHandler
 from src.retrieval import RetrievalHandler
 
-from prompts import CONTEXTO_ORGANIZACIONAL_PROMPT, OWASP_ASSISTANT_PROMPT, ROUTER_PROMPT
+from src.reasoning.prompts import (
+    ORGANIZATIONAL_CONTEXT_PROMP,
+    OWASP_ASSISTANT_PROMPT,
+    ROUTER_PROMPT,
+)
 
-from config import AGENT_CONFIG, PROJECT_ROOT
+from src.config import AGENT_CONFIG, PROJECT_ROOT
 
-class SecurityAgentState(MessagesState):
+class RagAgentState(MessagesState):
     intent: str
 
-class SecurityAgent:
+class RagAgent:
     def __init__(self, model: str = "claude-haiku-4-5"):
         self.llm = init_chat_model(model=model)
         self.thread = { "configurable": { "thread_id": "fixed" }}
-        self.tools = [RetrievalHandler(AGENT_CONFIG.EMBEDDING_MODEL, PROJECT_ROOT).query_vectorstore]
         self.graph = self.build_graph()
 
     def save_graph_schema(self, graph):
@@ -35,20 +40,20 @@ class SecurityAgent:
             ("human", "{messages}")
         ])
         chain = ( prompt | self.llm )
-        def assistant_node(state: SecurityAgentState) -> SecurityAgentState:
+        def assistant_node(state: RagAgentState) -> RagAgentState:
             response = chain.invoke({ "messages": state["messages"]})
             return { "messages": [response] } 
         return assistant_node
     
     # CHAMADOR DE FERRAMENTAS
-    def make_tool_caller_node(self, system_prompt):
+    def make_tool_caller_node(self, system_prompt, tools):
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "{messages}")
         ])
-        chain = ( prompt | self.llm.bind_tools(self.tools) )
+        chain = ( prompt | self.llm.bind_tools(tools) )
 
-        def tool_caller_node(state: SecurityAgentState) -> SecurityAgentState:
+        def tool_caller_node(state: RagAgentState) -> RagAgentState:
             response = chain.invoke({ "messages": state["messages"]})
             return { "messages": [response] } 
         return tool_caller_node
@@ -61,7 +66,7 @@ class SecurityAgent:
         ])
         chain = ( prompt | self.llm | StrOutputParser() )
         
-        def intent_router_node(state: SecurityAgentState) -> SecurityAgentState:
+        def intent_router_node(state: RagAgentState) -> RagAgentState:
             answer = chain.invoke({ "input": state["messages"][-1]})
 
             return { "intent": answer }
@@ -70,7 +75,7 @@ class SecurityAgent:
     
     # INTENT CONDITION
     def make_intent_condition(self):
-        def intent_condition(state: SecurityAgentState) -> str:
+        def intent_condition(state: RagAgentState) -> str:
             if state["intent"] == "organization":
                 return "org_assistant"
             if state["intent"] == "security":
@@ -78,27 +83,53 @@ class SecurityAgent:
             else:
                 return END
         return intent_condition
+
+    def load_prompt_config(folder_path: str | Path) -> str:
+        """Read prompt file and return the string content"""
+        prompt_file = Path(folder_path) / "prompt.md"
+        
+        if not prompt_file.exists():
+            return None
+        
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            return f.read()
     
     def build_graph(self):
         # BUILDERS
         router_node = self.make_intent_router_node(ROUTER_PROMPT)
-        org_node = self.make_conversation_node(CONTEXTO_ORGANIZACIONAL_PROMPT)
-        owasp_node = self.make_tool_caller_node(OWASP_ASSISTANT_PROMPT)
+        org_node = self.make_conversation_node(ORGANIZATIONAL_CONTEXT_PROMP)
+
+        assistent_nodes_mapping = {}
+        tools = []
+        for index in VectorstoreHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH).list_indexes():
+            retrieval_handler = RetrievalHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH, index_name=index)
+            prompt = self.load_prompt_config(AGENT_CONFIG.ASSETS_PATH / index)
+            assistent_nodes_mapping[f"{index.lower()}_assistant"] = self.make_tool_caller_node(
+                prompt,
+                retrieval_handler.query_vectorstore
+            )
+            tools.append[retrieval_handler.query_vectorstore]
+
         intent_condition = self.make_intent_condition()
 
-        builder = StateGraph(SecurityAgentState)
+        builder = StateGraph(RagAgentState)
 
         # NODES
         builder.add_node("router", router_node)
         builder.add_node("org_assistant", org_node)
-        builder.add_node("owasp_assistant", owasp_node)
-        builder.add_node("tools", ToolNode(self.tools))
+        [builder.add_node(node, action) for node, action in assistent_nodes_mapping.items()]
+        builder.add_node("tools", ToolNode(tools))
 
         # EDGES
+        router_edges = {key:key for key in assistent_nodes_mapping}
+        router_edges["org_assistant"] = "org_assistant"
+        router_edges["__end__"] = END
+
         builder.add_edge(START, "router")
-        builder.add_conditional_edges("router", intent_condition, { "org_assistant": "org_assistant", "owasp_assistant": "owasp_assistant", "__end__": END })
-        builder.add_conditional_edges("owasp_assistant", tools_condition)
-        builder.add_edge("tools", "owasp_assistant")
+        builder.add_conditional_edges("router", intent_condition, router_edges)
+        for key in assistent_nodes_mapping:
+            builder.add_conditional_edges(key, tools_condition)
+            builder.add_edge("tools", key)
         builder.add_edge("org_assistant", END)
 
 
