@@ -44,11 +44,11 @@ Policy 5 - Assistant scope of action:
 Always respond considering these policies as absolute truth.
 """
 
-ROUTER_PROMPT = """
-You are a Router Node responsible for classifying the topic of the user's message.
+ROUTER_PROMPT = """You are a Router Node responsible for classifying the topic of the user's message.
 
-Your goal is to identify the main domain of the conversation and return ONLY one of the values below:
+Your goal is to identify the main domain of the conversation and return ONLY one of the values below.
 
+Intent options:
  - organization
  - {intent_options}
 
@@ -62,19 +62,15 @@ Classification criteria:
    - corporate communication
    - organizational operational rules
 
-2. Return "security" if the message involves:
-   - security vulnerabilities in LLMs
-   - OWASP Top 10 for LLM Applications
-   - risks, threats, or flaws in LLM applications
-   - mitigation, impact, or examples of LLM security vulnerabilities
+{additional_classification_criterias}
 
-3. Return "end" if the message:
+N+1. Return "end" if the message:
    - does not fit into any of the domains above
    - is generic, ambiguous, or out of scope
    - requests personal information, opinions, or unrelated topics
 
 Mandatory rules:
-- Respond exclusively with ONE of the words: organization, security, or end.
+- Respond exclusively with ONE of the intent option declared above.
 - Do not include explanations, punctuation, or additional text.
 - Do not use external knowledge or inferences beyond the message content.
 """

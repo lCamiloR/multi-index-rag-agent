@@ -15,38 +15,76 @@ from src.reasoning.prompts import (
     ROUTER_PROMPT,
 )
 
-from src.config import AGENT_CONFIG, PROJECT_ROOT
+from src.config import AGENT_CONFIG
 
 class RagAgentState(MessagesState):
+    """Shared LangGraph state: chat history plus the router's intent label."""
+
     intent: str
 
 class RagAgent:
+    """Multi-index RAG agent: routes by intent, then runs domain assistants with retrieval tools."""
+
     def __init__(self, model: str = "claude-haiku-4-5"):
+        """Initialize the chat model, thread config, and compiled graph.
+
+        Args:
+            model: Model identifier passed to LangChain's ``init_chat_model``.
+        """
         self.llm = init_chat_model(model=model)
         self.thread = { "configurable": { "thread_id": "fixed" }}
         self.graph = self.build_graph()
 
     def save_graph_schema(self, graph):
+        """Persist a Mermaid diagram of the compiled graph next to the project root.
+
+        Args:
+            graph: A compiled LangGraph instance with ``get_graph(...).draw_mermaid()``.
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         file_path = f"graph_{timestamp}.mmd"
         mermaid_code = graph.get_graph(xray=True).draw_mermaid()
         with open(file_path, "w") as f:
             f.write(mermaid_code)
 
-    # CONVERSADOR
     def make_conversation_node(self, system_prompt):
+        """Build a graph node that answers from chat history without tools.
+
+        Used for the organizational assistant: system instructions plus the full
+        ``messages`` list.
+
+        Args:
+            system_prompt: System message content for the chat template.
+
+        Returns:
+            Callable that maps ``RagAgentState`` to an update containing the new
+            assistant ``AIMessage``.
+        """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "{messages}")
         ])
         chain = ( prompt | self.llm )
         def assistant_node(state: RagAgentState) -> RagAgentState:
+            """Invoke the plain chat chain on ``state["messages"]``."""
             response = chain.invoke({ "messages": state["messages"]})
             return { "messages": [response] } 
         return assistant_node
     
-    # CHAMADOR DE FERRAMENTAS
     def make_tool_caller_node(self, system_prompt, tools):
+        """Build a graph node that may call the given tools (e.g. vector retrieval).
+
+        The LLM is bound only to ``tools``, so each domain assistant can use a
+        dedicated retrieval function without seeing other indexes' tools.
+
+        Args:
+            system_prompt: System message for this domain assistant.
+            tools: Sequence of LangChain tools (typically one retriever per index).
+
+        Returns:
+            Callable that maps ``RagAgentState`` to an update with the model
+            response (plain reply or tool calls).
+        """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "{messages}")
@@ -54,12 +92,24 @@ class RagAgent:
         chain = ( prompt | self.llm.bind_tools(tools) )
 
         def tool_caller_node(state: RagAgentState) -> RagAgentState:
+            """Invoke the tool-bound model on ``state["messages"]``."""
             response = chain.invoke({ "messages": state["messages"]})
             return { "messages": [response] } 
         return tool_caller_node
     
-    # DETECTOR DE INTENCAO
     def make_intent_router_node(self, system_prompt: str):
+        """Build the router node: classifies the latest user turn into an intent string.
+
+        The system prompt (built from ``ROUTER_PROMPT``) lists valid intent labels
+        and criteria. The model must output a single token/label consumed by
+        ``make_intent_condition``.
+
+        Args:
+            system_prompt: Router instructions including intent list and rules.
+
+        Returns:
+            Callable that updates state with ``{"intent": <label>}``.
+        """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "{input}")
@@ -67,16 +117,34 @@ class RagAgent:
         chain = ( prompt | self.llm | StrOutputParser() )
         
         def intent_router_node(state: RagAgentState) -> RagAgentState:
+            """Set ``intent`` from the latest message only."""
             answer = chain.invoke({ "input": state["messages"][-1]})
 
             return { "intent": answer }
         
         return intent_router_node
     
-    # INTENT CONDITION
-    def make_intent_condition(self, intent_options: list[str, str]):
+    def make_intent_condition(
+        self,
+        intent_options: list[tuple[str, str, str]],
+    ):
+        """Build the routing function used after the router node.
+
+        Maps the string in ``state["intent"]`` to the next graph node name, or
+        ``END`` when no domain matches.
+
+        Args:
+            intent_options: Tuples ``(intent_label, classification_block, node_name)``
+                as built for ``ROUTER_PROMPT``; only ``intent_label`` and
+                ``node_name`` are used here.
+
+        Returns:
+            Callable compatible with ``StateGraph.add_conditional_edges`` from
+            ``router``, returning a successor node key or ``END``.
+        """
         def intent_condition(state: RagAgentState) -> str:
-            for intent, node_name in intent_options:
+            """Return the assistant node name for ``state["intent"]``, or ``END``."""
+            for intent, _, node_name in intent_options:
                 if state["intent"] == intent:
                     return node_name
             if state["intent"] == "organization":
@@ -86,8 +154,16 @@ class RagAgent:
         return intent_condition
     
     @staticmethod
-    def load_prompt_config(folder_path: str | Path) -> str:
-        """Read prompt file and return the string content"""
+    def load_prompt_config(folder_path: str | Path) -> dict | None:
+        """Load ``prompt.yaml`` for a FAISS index asset folder.
+
+        Args:
+            folder_path: Directory containing ``prompt.yaml`` (e.g. asset index name).
+
+        Returns:
+            Parsed YAML as a dict (e.g. ``system``, ``intent``,
+            ``classification_prompt``), or ``None`` if the file is missing.
+        """
         prompt_file = Path(folder_path) / "prompt.yaml"
         
         if not prompt_file.exists():
@@ -97,25 +173,50 @@ class RagAgent:
             return yaml.safe_load(f)
     
     def build_graph(self):
+        """Assemble and compile the LangGraph workflow.
+
+        Flow:
+
+        - ``START`` → ``router`` (intent from last message).
+        - Router → ``org_assistant`` or a per-index ``*_assistant`` node, or ``END``.
+        - Each RAG assistant has its own ``*_assistant_tools`` ``ToolNode`` (single
+          tool) to avoid fan-out to other domains after tool execution.
+        - Organizational path ends after one model turn.
+
+        Side effects:
+            Writes a timestamped ``graph_*.mmd`` file via ``save_graph_schema``.
+
+        Returns:
+            Compiled state graph with in-memory checkpointing.
+        """
         # BUILDERS
         org_node = self.make_conversation_node(ORGANIZATIONAL_CONTEXT_PROMP)
 
-        assistent_nodes_mapping = {}
-        tools = []
+        # Per index: one assistant node + one ToolNode with only that index's tool.
+        # Tool node names must be unique — never reuse "tools" inside the loop or only the last survives.
+        assistent_nodes_mapping: dict[str, dict] = {}
         router_options = []
-        for index in VectorstoreHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH).list_indexes():
-            retrieval_handler = RetrievalHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH, index_name=index)
-            prompt = self.load_prompt_config(AGENT_CONFIG.ASSETS_PATH / index)
-            node_name = f"{index.lower()}_assistant"
-            assistent_nodes_mapping[node_name] = self.make_tool_caller_node(
+        indexes = VectorstoreHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH).list_indexes()
+        for enum_index, faiss_index in enumerate(indexes, start=2):
+            retrieval_handler = RetrievalHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH, index_name=faiss_index)
+            prompt = self.load_prompt_config(AGENT_CONFIG.ASSETS_PATH / faiss_index)
+            node_name = f"{faiss_index.lower()}_assistant"
+            tools_node_name = f"{node_name}_tools"
+            tool_caller_node = self.make_tool_caller_node(
                 prompt["system"],
                 [retrieval_handler.query_vectorstore],
             )
-            tools.append(retrieval_handler.query_vectorstore)
-            router_options.append((prompt["intent"].strip(), node_name))
+            assistent_nodes_mapping[node_name] = {
+                "tool_node": tool_caller_node,
+                "tools_node_name": tools_node_name,
+                "tool": retrieval_handler.query_vectorstore,
+            }
+            router_options.append((prompt["intent"].strip(), str(enum_index) + prompt["classification_prompt"].strip(), node_name))
 
-        intent_options_str = " - ".join(i + "\n" for i, _ in router_options)
-        prompt = ROUTER_PROMPT.format(intent_options=intent_options_str)
+        intent_options_str = " - ".join(i + "\n" for i, _, _ in router_options)
+        classification_prompts = "\n\n".join(i for _, i, _ in router_options)
+        prompt = ROUTER_PROMPT.format(intent_options=intent_options_str, additional_classification_criterias=classification_prompts)
+
         router_node = self.make_intent_router_node(prompt)
         intent_condition = self.make_intent_condition(router_options)
 
@@ -124,19 +225,28 @@ class RagAgent:
         # NODES
         builder.add_node("router", router_node)
         builder.add_node("org_assistant", org_node)
-        [builder.add_node(node, action) for node, action in assistent_nodes_mapping.items()]
-        builder.add_node("tools", ToolNode(tools))
+        for node_name, tool_map in assistent_nodes_mapping.items():
+            builder.add_node(node_name, tool_map["tool_node"])
+            builder.add_node(
+                tool_map["tools_node_name"],
+                ToolNode([tool_map["tool"]]),
+            )
 
         # EDGES
         router_edges = {key:key for key in assistent_nodes_mapping}
         router_edges["org_assistant"] = "org_assistant"
         router_edges["__end__"] = END
-
+        
         builder.add_edge(START, "router")
         builder.add_conditional_edges("router", intent_condition, router_edges)
-        for key in assistent_nodes_mapping:
-            builder.add_conditional_edges(key, tools_condition)
-            builder.add_edge("tools", key)
+        for key, tool_map in assistent_nodes_mapping.items():
+            tools_node = tool_map["tools_node_name"]
+            builder.add_conditional_edges(
+                key,
+                tools_condition,
+                {"tools": tools_node, "__end__": END},
+            )
+            builder.add_edge(tools_node, key)
         builder.add_edge("org_assistant", END)
 
 
@@ -148,6 +258,17 @@ class RagAgent:
         return graph
 
     def ask(self, prompt: str):
+        """Run the graph on a user string and return the last assistant message text.
+
+        Uses the fixed ``thread_id`` in ``self.thread`` so checkpointed state
+        persists across calls on the same ``RagAgent`` instance.
+
+        Args:
+            prompt: User message (string); stored as the latest human message.
+
+        Returns:
+            ``content`` of the final message in the thread after the run.
+        """
         initial_state = { "messages": [ prompt ]}
         response = self.graph.invoke(input=initial_state, config=self.thread)
 
