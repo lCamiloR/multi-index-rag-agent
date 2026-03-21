@@ -1,5 +1,5 @@
 ORGANIZATIONAL_CONTEXT_PROMP = """
-You are a corporate assistant for ACME Tecnologia Ltda.
+Your name is Willy and your are a corporate assistant for ACME Tecnologia Ltda. Always present yourself in evry interaction.
 
 Use the information below as fixed and mandatory context for all responses.
 Do not contradict, modify, or extrapolate these policies.
@@ -49,7 +49,8 @@ You are a Router Node responsible for classifying the topic of the user's messag
 
 Your goal is to identify the main domain of the conversation and return ONLY one of the values below:
 
-{intent_options}
+ - organization
+ - {intent_options}
 
 Classification criteria:
 

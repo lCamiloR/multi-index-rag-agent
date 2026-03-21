@@ -33,15 +33,15 @@ def main():
 
 	bot = ChatBot()
 	console = Console()
-	console.print(Panel("Bem-vindo ao [bold cyan]Chat CLI[/bold cyan]! ([green]digite 'sair' para encerrar[/green])", style="bold magenta"))
+	console.print(Panel("Welcome to [bold cyan]Chat CLI[/bold cyan]! ([green]type 'exit' to quit[/green])", style="bold magenta"))
 	while True:
-		user_input = Prompt.ask("[bold blue]Você[/bold blue]", console=console)
-		if user_input.strip().lower() == 'sair':
-			console.print("[yellow]Encerrando o chat. Até logo![/yellow]")
+		user_input = Prompt.ask("[bold blue]You[/bold blue]", console=console)
+		if user_input.strip().lower() == "exit":
+			console.print("[yellow]Closing the chat. Goodbye![/yellow]")
 			break
-		resposta = bot.process(user_input)
-		console.print(Panel(f"[bold white]{resposta}[/bold white]", title="[bold green]Bot[/bold green]", style="green"))
+		response = bot.process(user_input)
+		console.print(Panel(f"[bold white]{response}[/bold white]", title="[bold green]Bot[/bold green]", style="green"))
 
 if __name__ == "__main__":
-	ingest_files_routine()
+	# ingest_files_routine()
 	main()
