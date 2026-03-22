@@ -1,0 +1,35 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	router(router)
+	org_assistant(org_assistant)
+	healthcare_complience_assistant(healthcare_complience_assistant)
+	healthcare_complience_assistant_tools(healthcare_complience_assistant_tools)
+	netflix_assistant(netflix_assistant)
+	netflix_assistant_tools(netflix_assistant_tools)
+	ollm_assistant(ollm_assistant)
+	ollm_assistant_tools(ollm_assistant_tools)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> router;
+	healthcare_complience_assistant -.-> __end__;
+	healthcare_complience_assistant -. &nbsp;tools&nbsp; .-> healthcare_complience_assistant_tools;
+	healthcare_complience_assistant_tools --> healthcare_complience_assistant;
+	netflix_assistant -.-> __end__;
+	netflix_assistant -. &nbsp;tools&nbsp; .-> netflix_assistant_tools;
+	netflix_assistant_tools --> netflix_assistant;
+	ollm_assistant -.-> __end__;
+	ollm_assistant -. &nbsp;tools&nbsp; .-> ollm_assistant_tools;
+	ollm_assistant_tools --> ollm_assistant;
+	router -.-> __end__;
+	router -.-> healthcare_complience_assistant;
+	router -.-> netflix_assistant;
+	router -.-> ollm_assistant;
+	router -.-> org_assistant;
+	org_assistant --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

@@ -1,13 +1,20 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 
-from base_embedding_handler import BaseEmbeedngHandler
+from src.base_embedding_handler import BaseEmbeedngHandler
 
 
 class VectorstoreHandler(BaseEmbeedngHandler):
-    
-    def save_chunks_to_vectorstore(self, doc_chunks: dict[str, list[list[str]]]) -> None:
+    """Persist and list FAISS indexes under ``faiss_local_path``."""
+
+    def save_chunks_to_vectorstore(
+        self,
+        doc_chunks: dict[str, list[list[Document]]],
+    ) -> None:
         """Embbed the document chunks and save them to the FAISS vector store"""
         for index, chunks_matrix in doc_chunks.items():
             for chunks in chunks_matrix:

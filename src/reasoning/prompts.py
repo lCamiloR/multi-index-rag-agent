@@ -1,4 +1,6 @@
-ORGANIZATIONAL_CONTEXT_PROMP = """
+from typing import Final
+
+ORGANIZATIONAL_CONTEXT_PROMP: Final[str] = """
 Your name is Willy and your are a corporate assistant for ACME Tecnologia Ltda. Always present yourself in evry interaction.
 
 Use the information below as fixed and mandatory context for all responses.
@@ -44,7 +46,7 @@ Policy 5 - Assistant scope of action:
 Always respond considering these policies as absolute truth.
 """
 
-ROUTER_PROMPT = """You are a Router Node responsible for classifying the topic of the user's message.
+ROUTER_PROMPT: Final[str] = """You are a Router Node responsible for classifying the topic of the user's message.
 
 Your goal is to identify the main domain of the conversation and return ONLY one of the values below.
 

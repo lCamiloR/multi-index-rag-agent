@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 import yaml
 from datetime import datetime
 from pathlib import Path
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Any, Callable, TypedDict
+
 from langchain.chat_models import init_chat_model
-from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
-from langgraph.graph import StateGraph, MessagesState, START, END
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import BaseTool
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from src.ingestion import VectorstoreHandler
 from src.retrieval import RetrievalHandler
@@ -17,6 +24,17 @@ from src.reasoning.prompts import (
 
 from src.config import AGENT_CONFIG
 
+StatePatch = dict[str, Any]
+
+
+class _DomainAssistantMap(TypedDict):
+    """Per-index assistant node, dedicated tool node name, and bound retrieval tool."""
+
+    tool_node: Callable[[RagAgentState], StatePatch]
+    tools_node_name: str
+    tool: BaseTool | Callable[..., Any]
+
+
 class RagAgentState(MessagesState):
     """Shared LangGraph state: chat history plus the router's intent label."""
 
@@ -25,17 +43,19 @@ class RagAgentState(MessagesState):
 class RagAgent:
     """Multi-index RAG agent: routes by intent, then runs domain assistants with retrieval tools."""
 
-    def __init__(self, model: str = "claude-haiku-4-5"):
+    def __init__(self, model: str = "claude-haiku-4-5") -> None:
         """Initialize the chat model, thread config, and compiled graph.
 
         Args:
             model: Model identifier passed to LangChain's ``init_chat_model``.
         """
-        self.llm = init_chat_model(model=model)
-        self.thread = { "configurable": { "thread_id": "fixed" }}
-        self.graph = self.build_graph()
+        self.llm: BaseChatModel = init_chat_model(model=model)
+        self.thread: dict[str, dict[str, str]] = {
+            "configurable": {"thread_id": "fixed"},
+        }
+        self.graph: CompiledStateGraph[RagAgentState, Any, Any, Any] = self.build_graph()
 
-    def save_graph_schema(self, graph):
+    def save_graph_schema(self, graph: CompiledStateGraph[RagAgentState, Any, Any, Any]) -> None:
         """Persist a Mermaid diagram of the compiled graph next to the project root.
 
         Args:
@@ -47,7 +67,10 @@ class RagAgent:
         with open(file_path, "w") as f:
             f.write(mermaid_code)
 
-    def make_conversation_node(self, system_prompt):
+    def make_conversation_node(
+        self,
+        system_prompt: str,
+    ) -> Callable[[RagAgentState], StatePatch]:
         """Build a graph node that answers from chat history without tools.
 
         Used for the organizational assistant: system instructions plus the full
@@ -65,13 +88,17 @@ class RagAgent:
             ("human", "{messages}")
         ])
         chain = ( prompt | self.llm )
-        def assistant_node(state: RagAgentState) -> RagAgentState:
+        def assistant_node(state: RagAgentState) -> StatePatch:
             """Invoke the plain chat chain on ``state["messages"]``."""
-            response = chain.invoke({ "messages": state["messages"]})
-            return { "messages": [response] } 
+            response = chain.invoke({"messages": state["messages"]})
+            return {"messages": [response]}
         return assistant_node
-    
-    def make_tool_caller_node(self, system_prompt, tools):
+
+    def make_tool_caller_node(
+        self,
+        system_prompt: str,
+        tools: list[BaseTool | Callable[..., Any]],
+    ) -> Callable[[RagAgentState], StatePatch]:
         """Build a graph node that may call the given tools (e.g. vector retrieval).
 
         The LLM is bound only to ``tools``, so each domain assistant can use a
@@ -91,13 +118,16 @@ class RagAgent:
         ])
         chain = ( prompt | self.llm.bind_tools(tools) )
 
-        def tool_caller_node(state: RagAgentState) -> RagAgentState:
+        def tool_caller_node(state: RagAgentState) -> StatePatch:
             """Invoke the tool-bound model on ``state["messages"]``."""
-            response = chain.invoke({ "messages": state["messages"]})
-            return { "messages": [response] } 
+            response = chain.invoke({"messages": state["messages"]})
+            return {"messages": [response]}
         return tool_caller_node
-    
-    def make_intent_router_node(self, system_prompt: str):
+
+    def make_intent_router_node(
+        self,
+        system_prompt: str,
+    ) -> Callable[[RagAgentState], StatePatch]:
         """Build the router node: classifies the latest user turn into an intent string.
 
         The system prompt (built from ``ROUTER_PROMPT``) lists valid intent labels
@@ -116,18 +146,18 @@ class RagAgent:
         ])
         chain = ( prompt | self.llm | StrOutputParser() )
         
-        def intent_router_node(state: RagAgentState) -> RagAgentState:
+        def intent_router_node(state: RagAgentState) -> StatePatch:
             """Set ``intent`` from the latest message only."""
-            answer = chain.invoke({ "input": state["messages"][-1]})
+            answer = chain.invoke({"input": state["messages"][-1]})
 
-            return { "intent": answer }
-        
+            return {"intent": answer}
+
         return intent_router_node
-    
+
     def make_intent_condition(
         self,
         intent_options: list[tuple[str, str, str]],
-    ):
+    ) -> Callable[[RagAgentState], str]:
         """Build the routing function used after the router node.
 
         Maps the string in ``state["intent"]`` to the next graph node name, or
@@ -154,7 +184,7 @@ class RagAgent:
         return intent_condition
     
     @staticmethod
-    def load_prompt_config(folder_path: str | Path) -> dict | None:
+    def load_prompt_config(folder_path: str | Path) -> dict[str, Any] | None:
         """Load ``prompt.yaml`` for a FAISS index asset folder.
 
         Args:
@@ -170,9 +200,12 @@ class RagAgent:
             return None
         
         with open(prompt_file, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    
-    def build_graph(self):
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    def build_graph(self) -> CompiledStateGraph[RagAgentState, Any, Any, Any]:
         """Assemble and compile the LangGraph workflow.
 
         Flow:
@@ -192,14 +225,24 @@ class RagAgent:
         # BUILDERS
         org_node = self.make_conversation_node(ORGANIZATIONAL_CONTEXT_PROMP)
 
-        # Per index: one assistant node + one ToolNode with only that index's tool.
-        # Tool node names must be unique — never reuse "tools" inside the loop or only the last survives.
-        assistent_nodes_mapping: dict[str, dict] = {}
-        router_options = []
-        indexes = VectorstoreHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH).list_indexes()
+        assistent_nodes_mapping: dict[str, _DomainAssistantMap] = {}
+        router_options: list[tuple[str, str, str]] = []
+        indexes = VectorstoreHandler(
+            AGENT_CONFIG.EMBEDDING_MODEL,
+            AGENT_CONFIG.FAISS_INDEXING_PATH,
+        ).list_indexes()
         for enum_index, faiss_index in enumerate(indexes, start=2):
-            retrieval_handler = RetrievalHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH, index_name=faiss_index)
+            retrieval_handler = RetrievalHandler(
+                AGENT_CONFIG.EMBEDDING_MODEL,
+                AGENT_CONFIG.FAISS_INDEXING_PATH,
+                index_name=faiss_index,
+            )
             prompt = self.load_prompt_config(AGENT_CONFIG.ASSETS_PATH / faiss_index)
+            if prompt is None:
+                raise FileNotFoundError(
+                    f"Missing or invalid prompt.yaml for index {faiss_index!r} under "
+                    f"{AGENT_CONFIG.ASSETS_PATH}"
+                )
             node_name = f"{faiss_index.lower()}_assistant"
             tools_node_name = f"{node_name}_tools"
             tool_caller_node = self.make_tool_caller_node(
@@ -211,13 +254,22 @@ class RagAgent:
                 "tools_node_name": tools_node_name,
                 "tool": retrieval_handler.query_vectorstore,
             }
-            router_options.append((prompt["intent"].strip(), str(enum_index) + prompt["classification_prompt"].strip(), node_name))
+            router_options.append(
+                (
+                    str(prompt["intent"]).strip(),
+                    str(enum_index) + str(prompt["classification_prompt"]).strip(),
+                    node_name,
+                )
+            )
 
         intent_options_str = " - ".join(i + "\n" for i, _, _ in router_options)
         classification_prompts = "\n\n".join(i for _, i, _ in router_options)
-        prompt = ROUTER_PROMPT.format(intent_options=intent_options_str, additional_classification_criterias=classification_prompts)
+        router_system_prompt = ROUTER_PROMPT.format(
+            intent_options=intent_options_str,
+            additional_classification_criterias=classification_prompts,
+        )
 
-        router_node = self.make_intent_router_node(prompt)
+        router_node = self.make_intent_router_node(router_system_prompt)
         intent_condition = self.make_intent_condition(router_options)
 
         builder = StateGraph(RagAgentState)
@@ -257,7 +309,7 @@ class RagAgent:
         self.save_graph_schema(graph)
         return graph
 
-    def ask(self, prompt: str):
+    def ask(self, prompt: str) -> Any:
         """Run the graph on a user string and return the last assistant message text.
 
         Uses the fixed ``thread_id`` in ``self.thread`` so checkpointed state
@@ -267,7 +319,8 @@ class RagAgent:
             prompt: User message (string); stored as the latest human message.
 
         Returns:
-            ``content`` of the final message in the thread after the run.
+            ``content`` of the final message in the thread after the run (often a
+            string; may be structured for multimodal models).
         """
         initial_state = { "messages": [ prompt ]}
         response = self.graph.invoke(input=initial_state, config=self.thread)
