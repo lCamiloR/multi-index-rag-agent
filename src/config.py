@@ -13,8 +13,7 @@ class AgentConfig(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-    ANTHROPIC_API_KEY: str = Field(..., description="Anthropic API key.")
-    ANTHROPIC_MODEL_VERSION: str = Field(..., description="Model version to use for the agent.")
+    LLM_MODEL_VERSION: str = Field(..., description="Model version to use for the agent.")
     EMBEDDING_MODEL: str = Field(..., description="Model to be used for embeddings.")
     FAISS_INDEXING_PATH: Path = PROJECT_ROOT / "faiss_index"
     ASSETS_PATH: Path = PROJECT_ROOT / "assets"

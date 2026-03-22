@@ -1,132 +1,87 @@
-# multi-index-rag-agent
-Rag agent developed with lang-graph capable of chosing the correct vectore store index during execution
+# Multi-index RAG agent
 
-├── src/
-│   ├── main.py           # Aplicação principal
-│   ├── vectorstore.py    # Ingestão e geração de embeddings (FAISS)
+CLI chat application that ingests documents from disk into **separate FAISS indexes** (one per asset folder), then answers questions with a **LangGraph** workflow: an LLM **routes** the user’s intent to either a general “organization” assistant or a **domain-specific RAG assistant** that can call retrieval against exactly one index.
 
-# 📚 RAG OWASP LLM – Aplicação de Consulta RAG
+## Requirements
 
-Este projeto implementa uma aplicação de consulta baseada em RAG (Retrieval-Augmented Generation) utilizando documentos do **OWASP Top 10 for LLM Applications**.
+- **Python 3.13+** (see `pyproject.toml`)
+- **LLM Model** for whatever model `LLM_MODEL_VERSION` names: this repo only calls LangChain’s `init_chat_model(model=...)` and does not read an API key from `AgentConfig`.
+- Enough disk and RAM for **Sentence Transformers** embeddings (models download on first use)
 
-A aplicação permite:
-- Ingestão de documentos
-- Geração de embeddings
-- Armazenamento vetorial com FAISS
-- Consulta via aplicação principal
+## Install dependencies
 
-## 📦 Instalação das dependências
-
-Com o Poetry instalado, execute:
+This project uses **[uv](https://docs.astral.sh/uv/)** and a lockfile.
 
 ```bash
-poetry install
+cd /path/to/multi-index-rag-agent
+uv sync
 ```
 
-🧠 Ingestão de documentos e geração de embeddings
+That creates a virtual environment and installs everything from `uv.lock` / `pyproject.toml`.
+
+If you prefer pip:
 
 ```bash
-poetry run python ./src/vectorstore.py
+python3.13 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e .
 ```
 
-🚀 Executando a aplicação principal
+## Configuration
+
+Create a `.env` file in the **project root** (same directory as `pyproject.toml`). Values declared on `AgentConfig` in `src/config.py` are loaded from the environment and from that file via Pydantic Settings.
+
+| Variable | Purpose |
+|----------|---------|
+| `LLM_MODEL_VERSION` | Chat model id passed to LangChain’s `init_chat_model` (required). The CLI builds `RagAgent(AGENT_CONFIG.LLM_MODEL_VERSION)` in `src/main.py`. |
+| `EMBEDDING_MODEL` | Hugging Face model id for sentence-transformers / `HuggingFaceEmbeddings` (required). |
+
+There is **no** API key field in `AgentConfig` or elsewhere in application code: `RagAgent` only passes the model string to `init_chat_model`. Supply credentials the way LangChain and your chosen provider expect (environment, CLI profile, etc.).
+
+Optional paths (override via env using the same names as in `AgentConfig`):
+
+- `ASSETS_PATH` — defaults to `assets/`
+- `FAISS_INDEXING_PATH` — defaults to `faiss_index/`
+
+## How the project works
+
+### 1. Assets and indexes
+
+Place files under `assets/<INDEX_NAME>/`, where `<INDEX_NAME>` is the folder name; that name becomes the **FAISS index name** on disk.
+
+Supported extensions: **pdf, docx, xlsx, csv, txt** (see `FileIngestionHandler`).
+
+Each index folder **must** contain a `prompt.yaml` used when building the graph: **`system`**, **`intent`**, and **`classification_prompt`**. The router prompt is assembled from every index’s intent and classification text; the graph raises if `prompt.yaml` is missing.
+
+### 2. Ingestion (on startup)
+
+When you run the app, `ingest_files_routine()` in `src/main.py`:
+
+1. Fingerprints supported files under `assets/` (mtime + size).
+2. Compares them to `faiss_index/.ingestion_manifest.toon` and checks that every asset folder has a matching FAISS index.
+3. If nothing changed and indexes exist, ingestion is **skipped**.
+4. Otherwise: **Docling** converts each file to markdown (and writes a sibling `.md`), **Chunker** splits text (`MarkdownHeaderTextSplitter` on `##` for non-CSV; **CSV** uses line-oriented chunks with row metadata), **Hugging Face embeddings** are computed, and **FAISS** indexes are written under `faiss_index/`.
+
+### 3. Chat (LangGraph)
+
+`RagAgent` (`src/reasoning/graph.py`) compiles a graph that:
+
+- Runs a **router** node to classify the latest user message into an intent.
+- Routes to **`org_assistant`** for organizational / non-domain chat, or to **`<index>_assistant`** for a domain that has a FAISS index and `prompt.yaml`.
+- Domain assistants are bound to a **single** retrieval tool per index (`RetrievalHandler.query_vectorstore`), so tool use stays scoped to that index.
+
+When `RagAgent` compiles the graph (on startup), it writes a timestamped **`graph_*.mmd`** Mermaid diagram at the project root (`save_graph_schema` in `src/reasoning/graph.py`).
+
+### 4. Run the CLI
+
+From the project root, use a module run so imports resolve:
+
 ```bash
-poetry run python ./src/main.py
+uv run python -m src.main
 ```
 
-## 🧪 Exercício — RAG Multi-Documento com Roteamento Dinâmico
-
-### Objetivo
-
-Expandir a aplicação atual para suportar **ingestão e consulta de múltiplos documentos**, criando um novo fluxo completo de RAG a partir de um arquivo diferente do OWASP.
-
-O exercício envolve:
-- ingestão com Docling
-- criação de um novo vectorstore FAISS
-- adaptação do grafo de agentes para rotear consultas corretamente
+The app ingests if needed, then starts an interactive **Rich** prompt; type `exit` to quit.
 
 ---
 
-## 📥 Parte 1 — Nova ingestão de documento
-
-Crie uma nova rota ou fluxo de ingestão que aceite **um arquivo diferente**, podendo ser de um dos seguintes formatos:
-
-- `.pdf`
-- `.docx`
-- `.csv`
-- `.xlsx` / `.xls`
-- `.txt`
-
-### Requisitos
-
-- Utilize **Docling** para carregar o arquivo, independentemente do formato.
-- Não é necessário criar uma estrutura semântica nova (headers, seções, etc).
-- O documento deve ser tratado como **conteúdo bruto**, apenas convertido em texto.
-
----
-
-## 🧠 Parte 2 — Chunking e novo Vector Store
-
-Após carregar o documento:
-
-1. Aplique o chunking usando LangChain
-
-2. Crie um **novo banco vetorial FAISS**, separado do original.
-
-### Requisitos obrigatórios
-
-- O novo índice deve ter um nome diferente, por exemplo:
-  - `faiss_index_2`
-- O índice original **não pode ser sobrescrito**
-- Cada vectorstore deve ser independente
-
-Exemplo conceitual:
-```text
-faiss_index       -> OWASP Top 10 LLM
-faiss_index_2     -> Novo documento
-```
-
-### 🔁 Parte 3 — Adaptação do grafo de agentes
-
-
-Agora adapte o grafo (LangGraph) para suportar o novo fluxo.
-
-#### DICA IMPORTANTE
-
-Nosso builder de nodos de tools é generico, uma dica é adicionar o array de ferramentas como parametro no builder:
-
-```python
-    # CHAMADOR DE FERRAMENTAS
-    def make_tool_caller_node(self, system_prompt, tools):
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", "{messages}")
-        ])
-        chain = ( prompt | self.llm.bind_tools(tools) )
-
-        def tool_caller_node(state: SecurityAgentState) -> SecurityAgentState:
-            response = chain.invoke({ "messages": state["messages"]})
-            return { "messages": [response] } 
-        return tool_caller_node
-```
-Ai no builder de nodos voce adaptar:
-```python
-    def build_graph(self): 
-        owasp_node = self.make_tool_caller_node(OWASP_ASSISTANT_PROMPT, [get_relevant_docs_owasp])
-        new_node = self.make_tool_caller_node(SEU_PROMPT, [get_relevant_docs_new_doc])
-```
-
-Assim voce pode passar a lista contendo a nova ferramenta que acessa o vectorstore novo, ao inves de misturar as duas ferramentas, com isso voce pode criar um nodo pra cada vectorstore.
-
-Adaptar o Router Node para identificar o novo fluxo.
-
-Usuário
-  ↓
-Router Node
-  ├── OWASP RAG Node → faiss_index
-  ├── Novo Documento RAG Node → faiss_index_2
-  ├── Organizational Node
-  └── End (fora do escopo)
-
-
-
+**Summary:** Documents live in `assets/<domain>/` with `prompt.yaml`; ingestion builds/updates `faiss_index/` with a TOON manifest for change detection; the CLI agent routes questions and retrieves only from the index that matches the classified intent.
