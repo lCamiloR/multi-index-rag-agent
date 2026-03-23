@@ -35,8 +35,6 @@ Create a `.env` file in the **project root** (same directory as `pyproject.toml`
 | `LLM_MODEL_VERSION` | Chat model id passed to LangChain’s `init_chat_model` (required). The CLI builds `RagAgent(AGENT_CONFIG.LLM_MODEL_VERSION)` in `src/main.py`. |
 | `EMBEDDING_MODEL` | Hugging Face model id for sentence-transformers / `HuggingFaceEmbeddings` (required). |
 
-There is **no** API key field in `AgentConfig` or elsewhere in application code: `RagAgent` only passes the model string to `init_chat_model`. Supply credentials the way LangChain and your chosen provider expect (environment, CLI profile, etc.).
-
 Optional paths (override via env using the same names as in `AgentConfig`):
 
 - `ASSETS_PATH` — defaults to `assets/`
