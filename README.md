@@ -5,7 +5,6 @@ CLI chat application that ingests documents from disk into **separate FAISS inde
 ## Requirements
 
 - **Python 3.13+** (see `pyproject.toml`)
-- **LLM Model** for whatever model `LLM_MODEL_VERSION` names: this repo only calls LangChain’s `init_chat_model(model=...)` and does not read an API key from `AgentConfig`.
 - Enough disk and RAM for **Sentence Transformers** embeddings (models download on first use)
 
 ## Install dependencies

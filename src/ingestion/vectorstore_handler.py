@@ -28,7 +28,6 @@ class VectorstoreHandler(BaseEmbeedngHandler):
         if not vectorstore_path.exists():
             return []
         
-        # Get all subdirectories that represent indexes
         indexes = [d.name.replace(d.suffix, "") for d in vectorstore_path.iterdir() if d.is_file() and d.suffix == ".faiss"]
         return sorted(indexes)
  

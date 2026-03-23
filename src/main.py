@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from rich.console import Console
@@ -10,10 +11,8 @@ from src.config import AGENT_CONFIG
 from src.ingestion import Chunker, FileIngestionHandler, VectorstoreHandler
 from src.reasoning.graph import RagAgent
 
-
-def _ingestion_manifest_path() -> Path:
-    """Path to the TOON manifest that stores last-ingested asset fingerprints."""
-    return AGENT_CONFIG.FAISS_INDEXING_PATH / ".ingestion_manifest.toon"
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 def _load_stored_fingerprints(manifest_path: Path) -> dict[str, dict[str, int]] | None:
@@ -33,10 +32,7 @@ def _load_stored_fingerprints(manifest_path: Path) -> dict[str, dict[str, int]] 
         data = decode(text)
     except OSError:
         return None
-    if not isinstance(data, dict):
-        return None
-    raw = data.get("files")
-    if not isinstance(raw, dict):
+    if not isinstance(data, dict) or not(raw := data.get("files")):
         return None
     out: dict[str, dict[str, int]] = {}
     for rel, meta in raw.items():
@@ -44,8 +40,7 @@ def _load_stored_fingerprints(manifest_path: Path) -> dict[str, dict[str, int]] 
             continue
         mtime_ns = meta.get("mtime_ns")
         size = meta.get("size")
-        if isinstance(mtime_ns, int) and isinstance(size, int):
-            out[rel] = {"mtime_ns": mtime_ns, "size": size}
+        out[rel] = {"mtime_ns": mtime_ns, "size": size}
     return dict(sorted(out.items()))
 
 
@@ -53,7 +48,7 @@ def _save_ingestion_manifest(manifest_path: Path, fingerprints: dict[str, dict[s
     """Persist fingerprints as TOON next to the FAISS store, creating parents if needed.
 
     Args:
-        manifest_path: Target manifest path (typically from :func:`_ingestion_manifest_path`).
+        manifest_path: Target manifest path.
         fingerprints: Current asset file signatures keyed by path relative to ``assets/``.
     """
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +89,29 @@ def _ingestion_needed(
     return bool(missing_indexes)
 
 
+def ingest_files_routine() -> None:
+	"""Convert assets to markdown, chunk, embed, and save FAISS indexes when needed.
+
+	Skips Docling conversion and embedding when the TOON manifest matches current
+	files and all required indexes already exist under ``FAISS_INDEXING_PATH``.
+	"""
+	file_ingestion_handler = FileIngestionHandler()
+	chunker = Chunker()
+	vectorstore_handler = VectorstoreHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH)
+
+	manifest_path = AGENT_CONFIG.FAISS_INDEXING_PATH / ".ingestion_manifest.toon"
+	fingerprints = file_ingestion_handler.get_asset_file_fingerprints()
+	index_names = file_ingestion_handler.index_names_for_current_assets()
+	if not _ingestion_needed(manifest_path, fingerprints, vectorstore_handler, index_names):
+		logger.info("Ingestion skipped: no new indexes and no new or changed asset files.")
+		return
+
+	markdown_files = file_ingestion_handler.get_markdown_docs()
+	docs_chunks = chunker.get_all_documents_chunks(markdown_files)
+	vectorstore_handler.save_chunks_to_vectorstore(docs_chunks)
+	_save_ingestion_manifest(manifest_path, fingerprints)
+
+
 class ChatBot:
 	"""Thin CLI wrapper around ``RagAgent``."""
 
@@ -111,32 +129,7 @@ class ChatBot:
 			The model response, coerced to ``str`` if needed.
 		"""
 		result = self.llm.ask(user_input)
-		if isinstance(result, str):
-			return result
-		return str(result)
-
-
-def ingest_files_routine() -> None:
-	"""Convert assets to markdown, chunk, embed, and save FAISS indexes when needed.
-
-	Skips Docling conversion and embedding when the TOON manifest matches current
-	files and all required indexes already exist under ``FAISS_INDEXING_PATH``.
-	"""
-	file_ingestion_handler = FileIngestionHandler()
-	chunker = Chunker()
-	vectorstore_handler = VectorstoreHandler(AGENT_CONFIG.EMBEDDING_MODEL, AGENT_CONFIG.FAISS_INDEXING_PATH)
-
-	manifest_path = _ingestion_manifest_path()
-	fingerprints = file_ingestion_handler.get_asset_file_fingerprints()
-	index_names = file_ingestion_handler.index_names_for_current_assets()
-	if not _ingestion_needed(manifest_path, fingerprints, vectorstore_handler, index_names):
-		print("Ingestion skipped: no new indexes and no new or changed asset files.")
-		return
-
-	markdown_files = file_ingestion_handler.get_markdown_docs()
-	docs_chunks = chunker.get_all_documents_chunks(markdown_files)
-	vectorstore_handler.save_chunks_to_vectorstore(docs_chunks)
-	_save_ingestion_manifest(manifest_path, fingerprints)
+		return result if isinstance(result, str) else str(result)
 
 
 def main() -> None:

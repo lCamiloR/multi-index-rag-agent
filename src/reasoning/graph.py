@@ -3,7 +3,7 @@ from __future__ import annotations
 import yaml
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -27,14 +27,6 @@ from src.config import AGENT_CONFIG
 StatePatch = dict[str, Any]
 
 
-class _DomainAssistantMap(TypedDict):
-    """Per-index assistant node, dedicated tool node name, and bound retrieval tool."""
-
-    tool_node: Callable[[RagAgentState], StatePatch]
-    tools_node_name: str
-    tool: BaseTool | Callable[..., Any]
-
-
 class RagAgentState(MessagesState):
     """Shared LangGraph state: chat history plus the router's intent label."""
 
@@ -53,9 +45,9 @@ class RagAgent:
         self.thread: dict[str, dict[str, str]] = {
             "configurable": {"thread_id": "fixed"},
         }
-        self.graph: CompiledStateGraph[RagAgentState, Any, Any, Any] = self.build_graph()
+        self.graph: CompiledStateGraph[RagAgentState, Any, Any, Any] = self._build_graph()
 
-    def save_graph_schema(self, graph: CompiledStateGraph[RagAgentState, Any, Any, Any]) -> None:
+    def _save_graph_schema(self, graph: CompiledStateGraph[RagAgentState, Any, Any, Any]) -> None:
         """Persist a Mermaid diagram of the compiled graph next to the project root.
 
         Args:
@@ -67,7 +59,7 @@ class RagAgent:
         with open(file_path, "w") as f:
             f.write(mermaid_code)
 
-    def make_conversation_node(
+    def _make_conversation_node(
         self,
         system_prompt: str,
     ) -> Callable[[RagAgentState], StatePatch]:
@@ -94,7 +86,7 @@ class RagAgent:
             return {"messages": [response]}
         return assistant_node
 
-    def make_tool_caller_node(
+    def _make_tool_caller_node(
         self,
         system_prompt: str,
         tools: list[BaseTool | Callable[..., Any]],
@@ -124,7 +116,7 @@ class RagAgent:
             return {"messages": [response]}
         return tool_caller_node
 
-    def make_intent_router_node(
+    def _make_intent_router_node(
         self,
         system_prompt: str,
     ) -> Callable[[RagAgentState], StatePatch]:
@@ -132,7 +124,7 @@ class RagAgent:
 
         The system prompt (built from ``ROUTER_PROMPT``) lists valid intent labels
         and criteria. The model must output a single token/label consumed by
-        ``make_intent_condition``.
+        ``_make_intent_condition``.
 
         Args:
             system_prompt: Router instructions including intent list and rules.
@@ -154,7 +146,7 @@ class RagAgent:
 
         return intent_router_node
 
-    def make_intent_condition(
+    def _make_intent_condition(
         self,
         intent_options: list[tuple[str, str, str]],
     ) -> Callable[[RagAgentState], str]:
@@ -205,7 +197,7 @@ class RagAgent:
             return None
         return data
 
-    def build_graph(self) -> CompiledStateGraph[RagAgentState, Any, Any, Any]:
+    def _build_graph(self) -> CompiledStateGraph[RagAgentState, Any, Any, Any]:
         """Assemble and compile the LangGraph workflow.
 
         Flow:
@@ -217,15 +209,15 @@ class RagAgent:
         - Organizational path ends after one model turn.
 
         Side effects:
-            Writes a timestamped ``graph_*.mmd`` file via ``save_graph_schema``.
+            Writes a timestamped ``graph_*.mmd`` file via ``_save_graph_schema``.
 
         Returns:
             Compiled state graph with in-memory checkpointing.
         """
         # BUILDERS
-        org_node = self.make_conversation_node(ORGANIZATIONAL_CONTEXT_PROMP)
+        org_node = self._make_conversation_node(ORGANIZATIONAL_CONTEXT_PROMP)
 
-        assistent_nodes_mapping: dict[str, _DomainAssistantMap] = {}
+        assistent_nodes_mapping: dict = {}
         router_options: list[tuple[str, str, str]] = []
         indexes = VectorstoreHandler(
             AGENT_CONFIG.EMBEDDING_MODEL,
@@ -245,7 +237,7 @@ class RagAgent:
                 )
             node_name = f"{faiss_index.lower()}_assistant"
             tools_node_name = f"{node_name}_tools"
-            tool_caller_node = self.make_tool_caller_node(
+            tool_caller_node = self._make_tool_caller_node(
                 prompt["system"],
                 [retrieval_handler.query_vectorstore],
             )
@@ -256,8 +248,8 @@ class RagAgent:
             }
             router_options.append(
                 (
-                    str(prompt["intent"]).strip(),
-                    str(enum_index) + str(prompt["classification_prompt"]).strip(),
+                    prompt["intent"].strip(),
+                    str(enum_index) + prompt["classification_prompt"].strip(),
                     node_name,
                 )
             )
@@ -269,8 +261,8 @@ class RagAgent:
             additional_classification_criterias=classification_prompts,
         )
 
-        router_node = self.make_intent_router_node(router_system_prompt)
-        intent_condition = self.make_intent_condition(router_options)
+        router_node = self._make_intent_router_node(router_system_prompt)
+        intent_condition = self._make_intent_condition(router_options)
 
         builder = StateGraph(RagAgentState)
 
@@ -301,12 +293,11 @@ class RagAgent:
             builder.add_edge(tools_node, key)
         builder.add_edge("org_assistant", END)
 
-
         # COMPILATION
         memory = MemorySaver()
         graph = builder.compile(checkpointer=memory)
 
-        self.save_graph_schema(graph)
+        self._save_graph_schema(graph)
         return graph
 
     def ask(self, prompt: str) -> Any:
