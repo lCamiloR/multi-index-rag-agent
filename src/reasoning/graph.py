@@ -19,6 +19,7 @@ from src.retrieval import RetrievalHandler
 
 from src.reasoning.prompts import (
     ORGANIZATIONAL_CONTEXT_PROMP,
+    GENERAL_POURPUSE_PROMPT,
     ROUTER_PROMPT,
 )
 
@@ -46,6 +47,28 @@ class RagAgent:
             "configurable": {"thread_id": "fixed"},
         }
         self.graph: CompiledStateGraph[RagAgentState, Any, Any, Any] = self._build_graph()
+
+    @staticmethod
+    def load_prompt_config(folder_path: str | Path) -> dict[str, Any] | None:
+        """Load ``prompt.yaml`` for a FAISS index asset folder.
+
+        Args:
+            folder_path: Directory containing ``prompt.yaml`` (e.g. asset index name).
+
+        Returns:
+            Parsed YAML as a dict (e.g. ``system``, ``intent``,
+            ``classification_prompt``), or ``None`` if the file is missing.
+        """
+        prompt_file = Path(folder_path) / "prompt.yaml"
+        
+        if not prompt_file.exists():
+            return None
+        
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            return None
+        return data
 
     def _save_graph_schema(self, graph: CompiledStateGraph[RagAgentState, Any, Any, Any]) -> None:
         """Persist a Mermaid diagram of the compiled graph next to the project root.
@@ -165,37 +188,15 @@ class RagAgent:
             ``router``, returning a successor node key or ``END``.
         """
         def intent_condition(state: RagAgentState) -> str:
-            """Return the assistant node name for ``state["intent"]``, or ``END``."""
+            """Return the assistant node name for ``state["intent"]``."""
             for intent, _, node_name in intent_options:
                 if state["intent"] == intent:
                     return node_name
             if state["intent"] == "organization":
                 return "org_assistant"
             else:
-                return END
+                return "general_assistant"
         return intent_condition
-    
-    @staticmethod
-    def load_prompt_config(folder_path: str | Path) -> dict[str, Any] | None:
-        """Load ``prompt.yaml`` for a FAISS index asset folder.
-
-        Args:
-            folder_path: Directory containing ``prompt.yaml`` (e.g. asset index name).
-
-        Returns:
-            Parsed YAML as a dict (e.g. ``system``, ``intent``,
-            ``classification_prompt``), or ``None`` if the file is missing.
-        """
-        prompt_file = Path(folder_path) / "prompt.yaml"
-        
-        if not prompt_file.exists():
-            return None
-        
-        with open(prompt_file, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        if not isinstance(data, dict):
-            return None
-        return data
 
     def _build_graph(self) -> CompiledStateGraph[RagAgentState, Any, Any, Any]:
         """Assemble and compile the LangGraph workflow.
@@ -216,6 +217,7 @@ class RagAgent:
         """
         # BUILDERS
         org_node = self._make_conversation_node(ORGANIZATIONAL_CONTEXT_PROMP)
+        general_node = self._make_conversation_node(GENERAL_POURPUSE_PROMPT)
 
         assistent_nodes_mapping: dict = {}
         router_options: list[tuple[str, str, str]] = []
@@ -269,6 +271,7 @@ class RagAgent:
         # NODES
         builder.add_node("router", router_node)
         builder.add_node("org_assistant", org_node)
+        builder.add_node("general_assistant", general_node)
         for node_name, tool_map in assistent_nodes_mapping.items():
             builder.add_node(node_name, tool_map["tool_node"])
             builder.add_node(
@@ -279,7 +282,7 @@ class RagAgent:
         # EDGES
         router_edges = {key:key for key in assistent_nodes_mapping}
         router_edges["org_assistant"] = "org_assistant"
-        router_edges["__end__"] = END
+        router_edges["general_assistant"] = "general_assistant"
         
         builder.add_edge(START, "router")
         builder.add_conditional_edges("router", intent_condition, router_edges)
@@ -292,6 +295,7 @@ class RagAgent:
             )
             builder.add_edge(tools_node, key)
         builder.add_edge("org_assistant", END)
+        builder.add_edge("general_assistant", END)
 
         # COMPILATION
         memory = MemorySaver()

@@ -46,6 +46,9 @@ Policy 5 - Assistant scope of action:
 Always respond considering these policies as absolute truth.
 """
 
+GENERAL_POURPUSE_PROMPT: Final[str] = """You are an assistant named Chief. You can answer questions about general topics, 
+always try to be helpful and concise in your answers. Always present yourself so the user knows your name and what you can do."""
+
 ROUTER_PROMPT: Final[str] = """You are a Router Node responsible for classifying the topic of the user's message.
 
 Your goal is to identify the main domain of the conversation and return ONLY one of the values below.
@@ -66,7 +69,7 @@ Classification criteria:
 
 {additional_classification_criterias}
 
-N+1. Return "end" if the message:
+N+1. Return "general" if the message:
    - does not fit into any of the domains above
    - is generic, ambiguous, or out of scope
    - requests personal information, opinions, or unrelated topics
